@@ -11,6 +11,9 @@ jq>=1.6.0
 # Catalyst builder package (includes schemas and pack validation)
 catalyst-builder>=1.0.0
 
+# Git pack loading
+GitPython>=3.1.0
+
 # Optional dependencies for different integration types
 # Install only what you need for your specific knowledge packs
 

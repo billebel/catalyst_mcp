@@ -7,7 +7,8 @@ import logging
 from typing import Dict, Any, Optional, List, Union
 from dataclasses import dataclass
 import httpx
-from ..models import Pack, ToolDefinition, AuthMethod, ConnectionConfig
+from ..models import Pack, ToolDefinition, ConnectionConfig
+from catalyst_pack_schemas import AuthMethod
 
 
 logger = logging.getLogger(__name__)
@@ -81,11 +82,12 @@ class AuthenticationHandler:
     """Handles different authentication methods."""
     
     @staticmethod
-    def prepare_auth(connection: ConnectionConfig) -> Dict[str, Any]:
+    def prepare_auth(connection: ConnectionConfig, user_context: Dict[str, Any] = None) -> Dict[str, Any]:
         """Prepare authentication for HTTP client.
         
         Args:
             connection: Connection configuration
+            user_context: User authentication context for passthrough auth
             
         Returns:
             Dictionary with auth parameters for httpx
@@ -114,6 +116,24 @@ class AuthenticationHandler:
             key = VariableSubstitutor.substitute(auth_config.get('key', ''), {})
             header = auth_config.get('header', 'X-API-Key')
             return {'headers': {header: key}}
+        
+        elif auth_method == AuthMethod.PASSTHROUGH or auth_method == "passthrough":
+            # Handle passthrough authentication using user context
+            if user_context is None:
+                raise ValueError("User context required for passthrough authentication")
+            
+            user_token = user_context.get('token')
+            if not user_token:
+                raise ValueError("No authentication token found in user context")
+            
+            # Get configuration for header and format
+            header_name = auth_config.get('header', 'Authorization')
+            token_format = auth_config.get('format', 'Bearer {token}')
+            
+            # Format the token
+            formatted_token = token_format.format(token=user_token)
+            
+            return {'headers': {header_name: formatted_token}}
         
         else:
             logger.warning(f"Unsupported auth method: {auth_method} (type: {type(auth_method)}, repr: {repr(auth_method)})")
@@ -224,8 +244,17 @@ class APIAdapter:
         # Prepare base URL with variable substitution
         self.base_url = VariableSubstitutor.substitute(self.connection.base_url, {})
         
-        # Prepare authentication
-        self.auth_params = AuthenticationHandler.prepare_auth(self.connection)
+        # Prepare authentication (delay for passthrough auth until execution)
+        if (self.connection.auth and 
+            (self.connection.auth.method == AuthMethod.PASSTHROUGH or 
+             self.connection.auth.method == "passthrough")):
+            # For passthrough auth, prepare auth during tool execution when user context is available
+            self.auth_params = {}
+            self._is_passthrough_auth = True
+        else:
+            # For static auth methods, prepare now
+            self.auth_params = AuthenticationHandler.prepare_auth(self.connection)
+            self._is_passthrough_auth = False
     
     def _reload_auth(self) -> None:
         """Reload authentication parameters from fresh environment variables."""
@@ -436,14 +465,26 @@ class APIAdapter:
             if method.upper() == "POST":
                 request_params["data"] = data
         
+        # Prepare passthrough authentication if needed
+        auth_params = self.auth_params
+        if self._is_passthrough_auth:
+            try:
+                # Import here to avoid circular imports
+                from catalyst_mcp.main import user_context
+                current_user_context = user_context.get({})
+                auth_params = AuthenticationHandler.prepare_auth(self.connection, current_user_context)
+            except Exception as e:
+                logger.error(f"Failed to prepare passthrough auth: {e}")
+                auth_params = {}
+        
         # Add authentication
-        if "auth" in self.auth_params:
-            request_params["auth"] = self.auth_params["auth"]
+        if "auth" in auth_params:
+            request_params["auth"] = auth_params["auth"]
         
         # Merge headers
         request_headers = {}
-        if "headers" in self.auth_params:
-            request_headers.update(self.auth_params["headers"])
+        if "headers" in auth_params:
+            request_headers.update(auth_params["headers"])
         if headers:
             request_headers.update(headers)
         if request_headers:

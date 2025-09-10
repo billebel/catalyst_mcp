@@ -47,3 +47,9 @@ logs/
 # Development data
 splunk-data/
 tmp/
+
+# Claude Code session files - NEVER commit
+CLAUDE.md
+PLAN.md
+next_steps.md
+.claude/
