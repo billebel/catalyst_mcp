@@ -108,12 +108,65 @@ class AuthenticationHandler:
         
         elif auth_method == AuthMethod.BEARER or auth_method == "bearer":
             token = VariableSubstitutor.substitute(auth_config.get('token', ''), {})
-            return {'headers': {'Authorization': f'Bearer {token}'}}
+            # Support custom header formats (e.g., "Splunk {token}")
+            format_template = auth_config.get('format', 'Bearer {token}')
+            header_name = auth_config.get('header', 'Authorization')
+            formatted_value = format_template.format(token=token)
+            logger.debug(f"Preparing bearer auth with format: {format_template} -> {header_name}: {formatted_value[:10]}***")
+            return {'headers': {header_name: formatted_value}}
         
         elif auth_method == AuthMethod.API_KEY or auth_method == "api_key":
-            key = VariableSubstitutor.substitute(auth_config.get('key', ''), {})
-            header = auth_config.get('header', 'X-API-Key')
-            return {'headers': {header: key}}
+            # Support both 'key' and 'api_key' config keys for flexibility
+            key = VariableSubstitutor.substitute(auth_config.get('api_key') or auth_config.get('key', ''), {})
+            header_name = auth_config.get('header_name') or auth_config.get('header', 'X-API-Key')
+            # Support custom header value format
+            header_value = auth_config.get('header_value', '{api_key}').format(api_key=key)
+            logger.debug(f"Preparing API key auth: {header_name}: {header_value[:10]}***")
+            return {'headers': {header_name: header_value}}
+        
+        elif auth_method == AuthMethod.PASSTHROUGH or auth_method == "passthrough":
+            # For passthrough auth, we need user context from MCP server
+            # This will be implemented when MCP server provides user context
+            source = auth_config.get('source', 'user_context')
+            header_name = auth_config.get('header', 'Authorization')
+            format_template = auth_config.get('format', 'Bearer {token}')
+            
+            # TODO: Get actual user credentials from MCP context
+            # For now, log that passthrough is configured but not yet implemented
+            logger.warning(f"Passthrough auth configured (source: {source}, header: {header_name}, format: {format_template}) but user context not available yet")
+            return {}
+        
+        elif auth_method == AuthMethod.CUSTOM or auth_method == "custom":
+            # Custom authentication allows complete flexibility
+            headers = {}
+            
+            # Support multiple custom headers
+            if 'headers' in auth_config:
+                # Multiple headers specified as dict
+                for header_name, header_value in auth_config['headers'].items():
+                    substituted_value = VariableSubstitutor.substitute(header_value, {})
+                    headers[header_name] = substituted_value
+            else:
+                # Single header specified
+                header_name = auth_config.get('header', auth_config.get('header_name', 'Authorization'))
+                header_value = auth_config.get('header_value', auth_config.get('value', ''))
+                
+                # Support token substitution in custom headers
+                if '{token}' in header_value and 'token' in auth_config:
+                    token = VariableSubstitutor.substitute(auth_config['token'], {})
+                    header_value = header_value.format(token=token)
+                else:
+                    header_value = VariableSubstitutor.substitute(header_value, {})
+                
+                if header_value:
+                    headers[header_name] = header_value
+            
+            if headers:
+                logger.debug(f"Preparing custom auth with {len(headers)} header(s)")
+                return {'headers': headers}
+            else:
+                logger.warning("Custom auth configured but no headers specified")
+                return {}
         
         else:
             logger.warning(f"Unsupported auth method: {auth_method} (type: {type(auth_method)}, repr: {repr(auth_method)})")
