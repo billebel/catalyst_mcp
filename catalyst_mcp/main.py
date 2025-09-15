@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 from fastmcp import FastMCP
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, RedirectResponse, HTMLResponse
 
 # Import existing components
 from .config import MCPConfig
@@ -22,6 +22,9 @@ from .audit.hec_logger import SplunkHECLogger
 
 # Import universal pack system
 from .packs import PackRegistry, UniversalToolFactory
+
+# Import OAuth handler
+from .oauth import SimpleOAuth
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -39,10 +42,80 @@ async def health_check(request: Request) -> JSONResponse:
     """Health check endpoint for Docker container monitoring."""
     return JSONResponse({"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()})
 
+# OAuth endpoints
+@mcp.custom_route("/oauth/start", methods=["POST"])
+async def start_oauth(request: Request) -> JSONResponse:
+    """Start OAuth flow for a specific instance."""
+    global oauth_handler
+
+    try:
+        data = await request.json()
+        instance_url = data.get("instance_url")
+        client_id = data.get("client_id")
+
+        if not instance_url or not client_id:
+            return JSONResponse({"error": "instance_url and client_id required"}, status_code=400)
+
+        auth_info = await oauth_handler.start_auth_flow(instance_url, client_id)
+        return JSONResponse(auth_info)
+    except Exception as e:
+        logger.error(f"OAuth start error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@mcp.custom_route("/callback", methods=["GET"])
+async def oauth_callback(request: Request) -> JSONResponse:
+    """Handle OAuth callback."""
+    global oauth_handler
+
+    try:
+        code = request.query_params.get("code")
+        state = request.query_params.get("state")
+        error = request.query_params.get("error")
+
+        if error:
+            return JSONResponse({"error": f"OAuth error: {error}"}, status_code=400)
+
+        if not code or not state:
+            return JSONResponse({"error": "Missing code or state"}, status_code=400)
+
+        result = await oauth_handler.handle_callback(code, state)
+
+        if "error" in result:
+            return JSONResponse(result, status_code=400)
+
+        # Success - show a simple HTML page
+        html = """
+        <html>
+        <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+            <h2>Authentication Successful!</h2>
+            <p>You can now close this window and return to your application.</p>
+            <script>setTimeout(() => window.close(), 3000);</script>
+        </body>
+        </html>
+        """
+        return HTMLResponse(html)
+
+    except Exception as e:
+        logger.error(f"OAuth callback error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@mcp.custom_route("/oauth/status", methods=["GET"])
+async def oauth_status(request: Request) -> JSONResponse:
+    """Check OAuth status for an instance."""
+    global oauth_handler
+
+    instance_url = request.query_params.get("instance_url")
+    if not instance_url:
+        return JSONResponse({"error": "instance_url required"}, status_code=400)
+
+    has_token = oauth_handler.get_token(instance_url) is not None
+    return JSONResponse({"instance": instance_url, "authenticated": has_token})
+
 # Global pack system components
 pack_registry: Optional[PackRegistry] = None
 tool_factory: Optional[UniversalToolFactory] = None
 config: Optional[MCPConfig] = None
+oauth_handler: Optional[SimpleOAuth] = None
 
 
 def initialize_pack_system() -> bool:
@@ -84,6 +157,55 @@ def initialize_pack_system() -> bool:
         logger.error(f"Failed to initialize pack system: {e}")
         return False
 
+
+@mcp.tool
+async def trigger_oauth_authentication(instance_url: str, client_id: str) -> Dict[str, Any]:
+    """Trigger OAuth authentication for a specific instance.
+
+    Args:
+        instance_url: The URL of the instance to authenticate with (e.g., https://mycompany.splunkcloud.com)
+        client_id: OAuth client ID for your application
+
+    Returns:
+        Authentication URL and instructions
+    """
+    global oauth_handler
+
+    if not oauth_handler:
+        return {"error": "OAuth handler not initialized"}
+
+    try:
+        auth_info = await oauth_handler.start_auth_flow(instance_url, client_id)
+        return {
+            "auth_url": auth_info["auth_url"],
+            "instructions": "Please visit the auth_url in your browser to authenticate",
+            "state": auth_info["state"],
+            "callback_url": "http://localhost:8443/callback"
+        }
+    except Exception as e:
+        return {"error": f"Failed to start OAuth flow: {str(e)}"}
+
+@mcp.tool
+async def check_oauth_status(instance_url: str) -> Dict[str, Any]:
+    """Check OAuth authentication status for an instance.
+
+    Args:
+        instance_url: The URL of the instance to check
+
+    Returns:
+        Authentication status
+    """
+    global oauth_handler
+
+    if not oauth_handler:
+        return {"error": "OAuth handler not initialized"}
+
+    has_token = oauth_handler.get_token(instance_url) is not None
+    return {
+        "instance": instance_url,
+        "authenticated": has_token,
+        "message": "Authenticated" if has_token else "Not authenticated - use trigger_oauth_authentication"
+    }
 
 @mcp.tool
 async def list_knowledge_packs() -> Dict[str, Any]:
@@ -212,10 +334,10 @@ async def current_user() -> Dict[str, Any]:
 
 async def startup_sequence():
     """Run server startup sequence."""
-    global config
-    
+    global config, oauth_handler
+
     logger.info("Starting Catalyst MCP Server - Universal Knowledge Pack Edition")
-    
+
     # Load configuration
     try:
         config = MCPConfig.from_env()
@@ -224,6 +346,10 @@ async def startup_sequence():
     except Exception as e:
         logger.error(f"Configuration error: {e}")
         return False
+
+    # Initialize OAuth handler
+    oauth_handler = SimpleOAuth()
+    logger.info("OAuth handler initialized")
     
     # Initialize pack system
     if not initialize_pack_system():
