@@ -17,9 +17,8 @@ except ImportError:
     InvalidGitRepositoryError = Exception
     GitCommandError = Exception
 
-from catalyst_pack_schemas import PackValidator, Pack
 from .loader import PackLoader
-from .models import PackValidationError
+from .models import PackValidationError, Pack
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,6 @@ class GitPackManager:
         self.git_packs_dir = Path(git_packs_dir)
         self.git_packs_dir.mkdir(exist_ok=True)
         self.pack_loader = PackLoader()
-        self.validator = PackValidator()
         self.loaded_git_packs: Dict[str, Dict[str, Any]] = {}
         
     def _get_pack_dir_name(self, repo_url: str, pack_name: Optional[str] = None) -> str:

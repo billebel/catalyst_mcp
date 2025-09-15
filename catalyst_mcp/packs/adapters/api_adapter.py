@@ -7,8 +7,7 @@ import logging
 from typing import Dict, Any, Optional, List, Union
 from dataclasses import dataclass
 import httpx
-from ..models import Pack, ToolDefinition, ConnectionConfig
-from catalyst_pack_schemas import AuthMethod
+from ..models import Pack, ToolDefinition, ConnectionConfig, AuthMethod
 
 
 logger = logging.getLogger(__name__)

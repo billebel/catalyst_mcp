@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from catalyst_mcp.packs.adapters.api_adapter import AuthenticationHandler
-from catalyst_pack_schemas import AuthMethod, ConnectionConfig, AuthConfig
+from catalyst_mcp.packs.models import AuthMethod, ConnectionConfig, AuthConfig
 
 
 class TestUserContextExtraction:
@@ -180,8 +180,8 @@ class TestToolExecutionWithPassthrough:
         """Test that API adapter gets user context during tool execution."""
         from catalyst_mcp.packs.adapters.api_adapter import APIAdapter
         from catalyst_mcp.main import user_context
-        from catalyst_pack_schemas import (
-            Pack, PackMetadata, ConnectionConfig, AuthConfig, 
+        from catalyst_mcp.packs.models import (
+            Pack, PackMetadata, ConnectionConfig, AuthConfig,
             ToolDefinition, ParameterDefinition, AuthMethod
         )
         

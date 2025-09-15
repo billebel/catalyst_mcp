@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 import yaml
-from catalyst_pack_schemas import Pack, PackValidationError
+from .models import Pack, PackValidationError
 from .modular_loader import ModularPackLoader
 
 

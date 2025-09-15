@@ -2,7 +2,7 @@
 
 import logging
 from typing import Dict, List, Optional, Set
-from catalyst_pack_schemas import Pack
+from .models import Pack
 from .loader import PackLoader
 from .transforms import TransformEngine
 from .git_manager import GitPackManager
