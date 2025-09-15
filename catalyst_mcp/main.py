@@ -23,8 +23,9 @@ from .audit.hec_logger import SplunkHECLogger
 # Import universal pack system
 from .packs import PackRegistry, UniversalToolFactory
 
-# Import OAuth handler
+# Import OAuth and SAML handlers
 from .oauth import SimpleOAuth
+from .saml_auth import SplunkSAMLAuth
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -111,11 +112,159 @@ async def oauth_status(request: Request) -> JSONResponse:
     has_token = oauth_handler.get_token(instance_url) is not None
     return JSONResponse({"instance": instance_url, "authenticated": has_token})
 
+# SAML endpoints
+@mcp.custom_route("/saml/start", methods=["GET"])
+async def start_saml_auth(request: Request) -> HTMLResponse:
+    """Start SAML authentication flow."""
+    global saml_handler
+
+    state = request.query_params.get("state")
+    splunk_url = request.query_params.get("splunk_url")
+
+    if not state or not splunk_url:
+        return HTMLResponse("<h2>Error: Missing parameters</h2>", status_code=400)
+
+    # Create HTML page that will handle SAML authentication
+    html = f"""
+    <html>
+    <head>
+        <title>Splunk SAML Authentication</title>
+        <style>
+            body {{ font-family: sans-serif; text-align: center; padding: 50px; }}
+            .auth-container {{ max-width: 600px; margin: 0 auto; }}
+            .btn {{ padding: 12px 24px; background: #007acc; color: white; text-decoration: none; border-radius: 4px; }}
+            .status {{ margin: 20px 0; }}
+        </style>
+    </head>
+    <body>
+        <div class="auth-container">
+            <h2>🔐 Splunk Authentication</h2>
+            <p>Click the button below to authenticate with your Splunk instance:</p>
+
+            <div class="status" id="status">
+                <a href="{splunk_url}/en-US/account/login" class="btn" onclick="startAuth()">
+                    Authenticate to Splunk
+                </a>
+            </div>
+
+            <div id="instructions" style="display: none;">
+                <p>After logging in to Splunk, return to this page to complete authentication.</p>
+                <button onclick="completeAuth()" class="btn">I've logged in - Complete Authentication</button>
+            </div>
+        </div>
+
+        <script>
+        function startAuth() {{
+            document.getElementById('instructions').style.display = 'block';
+            document.getElementById('status').innerHTML = '<p>Please log in to Splunk in the new tab/window...</p>';
+        }}
+
+        async function completeAuth() {{
+            try {{
+                document.getElementById('status').innerHTML = '<p>Creating authentication token...</p>';
+
+                // Try to create a token using the user's Splunk session
+                const response = await fetch('{splunk_url}/services/auth/tokens', {{
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {{
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'X-Requested-With': 'XMLHttpRequest'
+                    }},
+                    body: 'name=mcp-saml-token&audience=users&expires_on=%2B30d'
+                }});
+
+                if (response.ok) {{
+                    const text = await response.text();
+
+                    // Extract token from XML response
+                    const parser = new DOMParser();
+                    const xmlDoc = parser.parseFromString(text, "text/xml");
+                    const tokenElement = xmlDoc.getElementsByTagName("content")[0];
+
+                    if (tokenElement) {{
+                        const token = tokenElement.textContent;
+
+                        // Send token to our server
+                        const storeResponse = await fetch('/saml/token', {{
+                            method: 'POST',
+                            headers: {{ 'Content-Type': 'application/json' }},
+                            body: JSON.stringify({{
+                                state: '{state}',
+                                token: token,
+                                splunk_url: '{splunk_url}'
+                            }})
+                        }});
+
+                        if (storeResponse.ok) {{
+                            document.getElementById('status').innerHTML = '<h3>✅ Authentication Successful!</h3><p>You can close this window.</p>';
+                            setTimeout(() => window.close(), 3000);
+                        }} else {{
+                            throw new Error('Failed to store token');
+                        }}
+                    }} else {{
+                        throw new Error('No token in response');
+                    }}
+                }} else {{
+                    throw new Error('Failed to create token');
+                }}
+            }} catch (error) {{
+                document.getElementById('status').innerHTML = '<h3>❌ Authentication Failed</h3><p>' + error.message + '</p><p>Please ensure you are logged in to Splunk and try again.</p>';
+            }}
+        }}
+        </script>
+    </body>
+    </html>
+    """
+
+    return HTMLResponse(html)
+
+@mcp.custom_route("/saml/token", methods=["POST"])
+async def receive_saml_token(request: Request) -> JSONResponse:
+    """Receive SAML authentication token from browser."""
+    global saml_handler
+
+    try:
+        data = await request.json()
+        state = data.get("state")
+        token = data.get("token")
+        splunk_url = data.get("splunk_url")
+
+        if not all([state, token, splunk_url]):
+            return JSONResponse({"error": "Missing required fields"}, status_code=400)
+
+        # Verify state
+        auth_info = saml_handler.get_pending_auth(state)
+        if not auth_info:
+            return JSONResponse({"error": "Invalid or expired state"}, status_code=400)
+
+        # Store token
+        saml_handler.store_token(splunk_url, token)
+
+        return JSONResponse({"status": "success", "instance": splunk_url})
+
+    except Exception as e:
+        logger.error(f"SAML token storage error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@mcp.custom_route("/saml/status", methods=["GET"])
+async def saml_auth_status(request: Request) -> JSONResponse:
+    """Check SAML authentication status."""
+    global saml_handler
+
+    instance_url = request.query_params.get("instance_url")
+    if not instance_url:
+        return JSONResponse({"error": "instance_url required"}, status_code=400)
+
+    status = saml_handler.get_auth_status(instance_url)
+    return JSONResponse(status)
+
 # Global pack system components
 pack_registry: Optional[PackRegistry] = None
 tool_factory: Optional[UniversalToolFactory] = None
 config: Optional[MCPConfig] = None
 oauth_handler: Optional[SimpleOAuth] = None
+saml_handler: Optional[SplunkSAMLAuth] = None
 
 
 def initialize_pack_system() -> bool:
@@ -206,6 +355,113 @@ async def check_oauth_status(instance_url: str) -> Dict[str, Any]:
         "authenticated": has_token,
         "message": "Authenticated" if has_token else "Not authenticated - use trigger_oauth_authentication"
     }
+
+@mcp.tool
+async def trigger_saml_authentication(instance_url: str) -> Dict[str, Any]:
+    """Trigger SAML authentication for a Splunk instance.
+
+    Args:
+        instance_url: The URL of the Splunk instance (e.g., https://company.splunkcloud.com)
+
+    Returns:
+        Authentication URL and instructions
+    """
+    global saml_handler
+
+    if not saml_handler:
+        return {"error": "SAML handler not initialized"}
+
+    try:
+        # Auto-detect auth method first
+        auth_method = await saml_handler.detect_auth_method(instance_url)
+
+        if auth_method == "basic":
+            return {
+                "error": "Instance does not appear to use SAML authentication",
+                "suggestion": "Try basic authentication or trigger_oauth_authentication instead"
+            }
+
+        auth_info = await saml_handler.start_saml_flow(instance_url)
+        return {
+            "auth_url": auth_info["auth_url"],
+            "instructions": "Please visit the auth_url in your browser to authenticate via SAML/SSO",
+            "state": auth_info["state"],
+            "method": "saml"
+        }
+    except Exception as e:
+        return {"error": f"Failed to start SAML authentication: {str(e)}"}
+
+@mcp.tool
+async def check_saml_status(instance_url: str) -> Dict[str, Any]:
+    """Check SAML authentication status for a Splunk instance.
+
+    Args:
+        instance_url: The URL of the Splunk instance to check
+
+    Returns:
+        Authentication status
+    """
+    global saml_handler
+
+    if not saml_handler:
+        return {"error": "SAML handler not initialized"}
+
+    return saml_handler.get_auth_status(instance_url)
+
+@mcp.tool
+async def detect_splunk_auth_method(instance_url: str) -> Dict[str, Any]:
+    """Auto-detect the authentication method for a Splunk instance.
+
+    Args:
+        instance_url: The URL of the Splunk instance
+
+    Returns:
+        Detected authentication method and recommendations
+    """
+    global saml_handler
+
+    if not saml_handler:
+        return {"error": "SAML handler not initialized"}
+
+    try:
+        auth_method = await saml_handler.detect_auth_method(instance_url)
+
+        recommendations = {
+            "saml": "Use trigger_saml_authentication for SAML/SSO authentication",
+            "basic": "Use basic authentication or trigger_oauth_authentication if OAuth is configured"
+        }
+
+        return {
+            "instance": instance_url,
+            "detected_method": auth_method,
+            "recommendation": recommendations.get(auth_method, "Unknown authentication method")
+        }
+    except Exception as e:
+        return {"error": f"Failed to detect authentication method: {str(e)}"}
+
+@mcp.tool
+async def list_authenticated_instances() -> Dict[str, Any]:
+    """List all instances with active authentication.
+
+    Returns:
+        Dictionary of authenticated instances and their status
+    """
+    global oauth_handler, saml_handler
+
+    result = {"oauth_instances": {}, "saml_instances": {}}
+
+    if oauth_handler:
+        # Get OAuth authenticated instances (simplified)
+        for url, token_data in oauth_handler.tokens.items():
+            result["oauth_instances"][url] = {
+                "authenticated": True,
+                "method": "oauth"
+            }
+
+    if saml_handler:
+        result["saml_instances"] = saml_handler.list_authenticated_instances()
+
+    return result
 
 @mcp.tool
 async def list_knowledge_packs() -> Dict[str, Any]:
@@ -334,7 +590,7 @@ async def current_user() -> Dict[str, Any]:
 
 async def startup_sequence():
     """Run server startup sequence."""
-    global config, oauth_handler
+    global config, oauth_handler, saml_handler
 
     logger.info("Starting Catalyst MCP Server - Universal Knowledge Pack Edition")
 
@@ -350,6 +606,10 @@ async def startup_sequence():
     # Initialize OAuth handler
     oauth_handler = SimpleOAuth()
     logger.info("OAuth handler initialized")
+
+    # Initialize SAML handler
+    saml_handler = SplunkSAMLAuth()
+    logger.info("SAML handler initialized")
     
     # Initialize pack system
     if not initialize_pack_system():

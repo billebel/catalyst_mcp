@@ -160,6 +160,30 @@ class AuthenticationHandler:
                 logger.warning(f"OAuth2 authentication required for {instance_url} - no valid token found")
                 return {}
 
+        elif auth_method == AuthMethod.SAML or auth_method == "saml":
+            # SAML authentication
+            # Check if we have a stored token from the SAML flow
+            from ...saml_auth import SplunkSAMLAuth
+            saml_handler = SplunkSAMLAuth()
+
+            # Get instance URL from connection config
+            instance_url = connection.base_url or auth_config.get('instance_url', '')
+
+            # Check if we have a valid token
+            token = saml_handler.get_token(instance_url)
+
+            if token:
+                # Use the SAML token (Splunk format)
+                header_name = auth_config.get('header', 'Authorization')
+                format_template = auth_config.get('format', 'Splunk {token}')
+                formatted_value = format_template.format(token=token)
+                logger.debug(f"Using SAML token for {instance_url}")
+                return {'headers': {header_name: formatted_value}}
+            else:
+                # No valid token - user needs to authenticate
+                logger.warning(f"SAML authentication required for {instance_url} - no valid token found")
+                return {}
+
         elif auth_method == AuthMethod.CUSTOM or auth_method == "custom":
             # Custom authentication allows complete flexibility
             headers = {}

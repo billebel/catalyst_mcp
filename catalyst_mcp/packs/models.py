@@ -30,6 +30,7 @@ class AuthMethod(Enum):
     BEARER = "bearer"
     API_KEY = "api_key"
     OAUTH2 = "oauth2"
+    SAML = "saml"            # SAML/SSO authentication
     AWS_IAM = "aws_iam"
     SSH_KEY = "ssh_key"      # SSH key authentication
     CERT = "certificate"     # Certificate-based auth
