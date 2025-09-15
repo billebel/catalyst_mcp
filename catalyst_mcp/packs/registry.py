@@ -2,9 +2,10 @@
 
 import logging
 from typing import Dict, List, Optional, Set
-from catalyst_pack_schemas import Pack
+from .models import Pack
 from .loader import PackLoader
 from .transforms import TransformEngine
+from .git_manager import GitPackManager
 
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ class PackRegistry:
         self.loaded_packs: Dict[str, Pack] = {}
         self.core_packs: Set[str] = set()
         self.transform_engines: Dict[str, TransformEngine] = {}
+        self.git_manager = GitPackManager()  # Git pack support
         
     def set_core_packs(self, pack_names: List[str]) -> None:
         """Set which packs should be loaded at startup.
@@ -271,3 +273,40 @@ class PackRegistry:
             return data
         
         return transform_engine.transform(data, transform_config, variables or {})
+    
+    # Git pack management methods
+    
+    def load_git_pack(self, repo_url: str, user_context: Dict[str, any], 
+                     pack_path: Optional[str] = None, env_vars: Optional[str] = None,
+                     branch: str = "main", pack_name: Optional[str] = None) -> Dict[str, any]:
+        """Load a pack from Git repository using user credentials.
+        
+        Args:
+            repo_url: Git repository URL
+            user_context: User authentication context with Git credentials
+            pack_path: Optional subdirectory path in repo
+            env_vars: JSON string of environment variables
+            branch: Git branch to clone
+            pack_name: Optional pack name override
+            
+        Returns:
+            Result dictionary with success/error information
+        """
+        return self.git_manager.load_git_pack(repo_url, user_context, pack_path, env_vars, branch, pack_name)
+    
+    def list_git_packs(self) -> Dict[str, any]:
+        """List all loaded Git packs."""
+        return self.git_manager.list_git_packs()
+    
+    def get_git_pack_info(self, pack_name: str) -> Dict[str, any]:
+        """Get detailed information about a Git pack."""
+        return self.git_manager.get_git_pack_info(pack_name)
+    
+    def update_git_pack(self, pack_name: str, user_context: Dict[str, any], 
+                       branch: Optional[str] = None) -> Dict[str, any]:
+        """Update an existing Git pack."""
+        return self.git_manager.update_git_pack(pack_name, user_context, branch)
+    
+    def remove_git_pack(self, pack_name: str) -> Dict[str, any]:
+        """Remove a Git pack from runtime."""
+        return self.git_manager.remove_git_pack(pack_name)

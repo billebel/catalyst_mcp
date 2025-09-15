@@ -1,0 +1,321 @@
+metadata:
+  name: "github_passthrough"
+  version: "1.0.0"
+  description: "GitHub API access using user's personal access token (passthrough auth demo)"
+  vendor: "Catalyst MCP"
+  license: "MIT"
+  compatibility: "GitHub API v3/v4"
+  domain: "devops"
+  tags: ["github", "git", "devops", "passthrough-auth", "demo"]
+  pricing_tier: "free"
+  required_capabilities: ["api_read"]
+
+connection:
+  type: "rest"
+  base_url: "https://api.github.com"
+  timeout: 30
+  verify_ssl: true
+  auth:
+    method: "passthrough"
+    config:
+      source: "user_context"
+      header: "Authorization"
+      format: "Bearer {token}"
+
+tools:
+  get_user:
+    type: "details"
+    description: "🎯 START HERE: Get authenticated user information using your GitHub token"
+    endpoint: "/user"
+    method: "GET"
+    parameters: []
+    transform:
+      type: "jq"
+      expression: '{login: .login, name: .name, email: .email, bio: .bio, public_repos: .public_repos, followers: .followers, following: .following, created_at: .created_at, updated_at: .updated_at, avatar_url: .avatar_url, html_url: .html_url, type: .type}'
+
+  list_user_repos:
+    type: "list"
+    description: "⚠️ USE AFTER [get_user]: List repositories for the authenticated user"
+    endpoint: "/user/repos"
+    method: "GET"
+    query_params:
+      visibility: "{visibility}"
+      sort: "{sort}"
+      direction: "{direction}"
+      per_page: "{per_page}"
+      page: "{page}"
+    parameters:
+      - name: "visibility"
+        type: "string"
+        enum: ["all", "public", "private"]
+        default: "all"
+        description: "Repository visibility filter"
+      - name: "sort"
+        type: "string"
+        enum: ["created", "updated", "pushed", "full_name"]
+        default: "updated"
+        description: "Sort repositories by field"
+      - name: "direction"
+        type: "string"
+        enum: ["asc", "desc"]
+        default: "desc"
+        description: "Sort direction"
+      - name: "per_page"
+        type: "integer"
+        default: 30
+        min_value: 1
+        max_value: 100
+        description: "Results per page"
+      - name: "page"
+        type: "integer"
+        default: 1
+        description: "Page number"
+    transform:
+      type: "jq"
+      expression: '.[] | {name: .name, full_name: .full_name, description: .description, private: .private, fork: .fork, language: .language, stars: .stargazers_count, forks: .forks_count, watchers: .watchers_count, open_issues: .open_issues_count, created_at: .created_at, updated_at: .updated_at, pushed_at: .pushed_at, size: .size, default_branch: .default_branch, html_url: .html_url, clone_url: .clone_url}'
+
+  get_repo:
+    type: "details"
+    description: "Get detailed information about a specific repository"
+    endpoint: "/repos/{owner}/{repo}"
+    method: "GET"
+    parameters:
+      - name: "owner"
+        type: "string"
+        required: true
+        description: "Repository owner (username or organization)"
+      - name: "repo"
+        type: "string"
+        required: true
+        description: "Repository name"
+    transform:
+      type: "jq"
+      expression: '{name: .name, full_name: .full_name, description: .description, private: .private, fork: .fork, language: .language, stars: .stargazers_count, forks: .forks_count, watchers: .watchers_count, open_issues: .open_issues_count, network_count: .network_count, subscribers_count: .subscribers_count, created_at: .created_at, updated_at: .updated_at, pushed_at: .pushed_at, size: .size, default_branch: .default_branch, topics: .topics, license: .license.name, html_url: .html_url, clone_url: .clone_url, ssh_url: .ssh_url, owner: {login: .owner.login, type: .owner.type, html_url: .owner.html_url}}'
+
+  list_repo_issues:
+    type: "list"
+    description: "List issues for a repository (requires read access)"
+    endpoint: "/repos/{owner}/{repo}/issues"
+    method: "GET"
+    query_params:
+      state: "{state}"
+      labels: "{labels}"
+      assignee: "{assignee}"
+      creator: "{creator}"
+      mentioned: "{mentioned}"
+      sort: "{sort}"
+      direction: "{direction}"
+      since: "{since}"
+      per_page: "{per_page}"
+      page: "{page}"
+    parameters:
+      - name: "owner"
+        type: "string"
+        required: true
+        description: "Repository owner"
+      - name: "repo"
+        type: "string"
+        required: true
+        description: "Repository name"
+      - name: "state"
+        type: "string"
+        enum: ["open", "closed", "all"]
+        default: "open"
+        description: "Issue state filter"
+      - name: "labels"
+        type: "string"
+        required: false
+        description: "Comma-separated list of label names"
+      - name: "assignee"
+        type: "string"
+        required: false
+        description: "Username of assignee"
+      - name: "creator"
+        type: "string"
+        required: false
+        description: "Username of issue creator"
+      - name: "mentioned"
+        type: "string"
+        required: false
+        description: "Username mentioned in issue"
+      - name: "sort"
+        type: "string"
+        enum: ["created", "updated", "comments"]
+        default: "created"
+        description: "Sort issues by field"
+      - name: "direction"
+        type: "string"
+        enum: ["asc", "desc"]
+        default: "desc"
+        description: "Sort direction"
+      - name: "since"
+        type: "string"
+        required: false
+        description: "ISO 8601 timestamp"
+      - name: "per_page"
+        type: "integer"
+        default: 30
+        min_value: 1
+        max_value: 100
+        description: "Results per page"
+      - name: "page"
+        type: "integer"
+        default: 1
+        description: "Page number"
+    transform:
+      type: "jq"
+      expression: '.[] | {number: .number, title: .title, state: .state, user: .user.login, assignees: [.assignees[].login], labels: [.labels[].name], milestone: (.milestone.title // null), created_at: .created_at, updated_at: .updated_at, closed_at: .closed_at, comments: .comments, body: (.body // "")[0:200], html_url: .html_url}'
+
+  list_user_organizations:
+    type: "list"
+    description: "List organizations for the authenticated user"
+    endpoint: "/user/orgs"
+    method: "GET"
+    query_params:
+      per_page: "{per_page}"
+      page: "{page}"
+    parameters:
+      - name: "per_page"
+        type: "integer"
+        default: 30
+        min_value: 1
+        max_value: 100
+        description: "Results per page"
+      - name: "page"
+        type: "integer"
+        default: 1
+        description: "Page number"
+    transform:
+      type: "jq"
+      expression: '.[] | {login: .login, description: .description, url: .url, html_url: .html_url, avatar_url: .avatar_url, public_repos: .public_repos, public_gists: .public_gists, followers: .followers, following: .following, created_at: .created_at, updated_at: .updated_at}'
+
+prompts:
+  github_workflow_analysis:
+    description: "Comprehensive GitHub account and repository analysis using user's credentials"
+    template: |
+      Analyze the GitHub account and repositories using the user's personal access token:
+      
+      ## Account Overview
+      1. Get user information: get_user
+      2. List user repositories: list_user_repos
+      3. Get user organizations: list_user_organizations
+      
+      ## Repository Analysis
+      4. For each significant repository:
+         - Get detailed repo information: get_repo
+         - List recent issues: list_repo_issues (state=open)
+         - Analyze activity patterns and health
+      
+      ## Development Insights
+      5. Analyze repository patterns:
+         - Language distribution across repos
+         - Activity levels (commits, issues, stars)
+         - Public vs private repository ratio
+         - Collaboration patterns (forks, contributors)
+      
+      ## Security & Best Practices Review
+      6. Check for potential improvements:
+         - Repository descriptions and documentation
+         - License usage across projects
+         - Issue management practices
+         - Branching strategies (default branches)
+      
+      Focus on providing:
+      - **Development velocity** and activity patterns
+      - **Project health** indicators and recommendations
+      - **Collaboration patterns** and team insights
+      - **Security posture** and best practice suggestions
+      - **Portfolio optimization** recommendations
+      
+      🔒 **Privacy Note**: This analysis uses your personal GitHub token and only accesses repositories you have permission to view.
+      
+      🚀 **MANDATORY NEXT STEPS**:
+      1. Start with `get_user` to verify your token access
+      2. Use `list_user_repos` to see your repositories
+      3. Select interesting repos for detailed analysis with `get_repo`
+      4. Check issue activity with `list_repo_issues`
+    suggested_tools: ["get_user", "list_user_repos", "get_repo", "list_repo_issues"]
+    arguments:
+      - name: "focus_area"
+        type: "string"
+        description: "Specific area to focus analysis on (e.g., 'security', 'productivity', 'collaboration')"
+        required: false
+
+  repository_health_check:
+    description: "Analyze repository health and development practices using user's access"
+    template: |
+      Perform a comprehensive health check on specified GitHub repositories:
+      
+      ## Repository Assessment
+      For each repository you want to analyze:
+      
+      1. **Basic Information**: Use `get_repo` to get repository details
+      2. **Issue Management**: Use `list_repo_issues` to check open issues
+      3. **Activity Analysis**: Review recent updates and maintenance
+      
+      ## Health Indicators to Check
+      4. **Documentation Quality**:
+         - Repository description completeness
+         - README presence and quality
+         - License specification
+      
+      5. **Maintenance Status**:
+         - Recent commit activity (pushed_at)
+         - Open issue count and age
+         - Star-to-fork ratio analysis
+      
+      6. **Project Maturity**:
+         - Repository age and growth
+         - Language ecosystem health
+         - Community engagement levels
+      
+      ## Actionable Recommendations
+      7. Provide specific suggestions for:
+         - **Issue Management**: Reducing open issue backlog
+         - **Documentation**: Improving project clarity
+         - **Community**: Enhancing collaboration
+         - **Maintenance**: Keeping projects current
+      
+      🎯 **Usage**: This helps maintain healthy, well-documented repositories that attract contributors and users.
+      
+      🔧 **Example Usage**:
+      - `get_repo owner="octocat" repo="Hello-World"`
+      - `list_repo_issues owner="octocat" repo="Hello-World" state="open"`
+    suggested_tools: ["get_repo", "list_repo_issues"]
+    arguments:
+      - name: "owner"
+        type: "string"
+        description: "Repository owner (username or organization)"
+        required: true
+      - name: "repo"
+        type: "string"
+        description: "Repository name to analyze"
+        required: true
+
+resources:
+  github_api_docs:
+    type: "documentation"
+    url: "https://docs.github.com/en/rest"
+    description: "GitHub REST API official documentation"
+
+  github_token_setup:
+    type: "guide"
+    url: "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token"
+    description: "How to create a GitHub Personal Access Token"
+
+  github_token_scopes:
+    type: "guide"
+    url: "https://docs.github.com/en/developers/apps/building-oauth-apps/scopes-for-oauth-apps"
+    description: "GitHub token scopes and permissions reference"
+
+  passthrough_auth_guide:
+    type: "documentation"
+    url: "https://catalyst-mcp.dev/auth/passthrough"
+    description: "Catalyst MCP passthrough authentication guide"
+
+error_mapping:
+  "401": "Authentication failed - check your GitHub token permissions and expiration"
+  "403": "Access forbidden - insufficient token scopes or rate limit exceeded"
+  "404": "Repository or resource not found - check if you have access"
+  "422": "Unprocessable entity - check parameter values and requirements"
+  "429": "Rate limit exceeded - GitHub API limits reached, wait before retrying"

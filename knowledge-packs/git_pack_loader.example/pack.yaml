@@ -1,0 +1,217 @@
+metadata:
+  name: "git_pack_loader"
+  version: "1.0.0"
+  description: "Load MCP packs dynamically from Git repositories using user credentials"
+  vendor: "Catalyst MCP"
+  license: "MIT"
+  compatibility: "Git repositories with pack.yaml"
+  domain: "devops"
+  tags: ["git", "pack-management", "dynamic-loading", "passthrough-auth"]
+  pricing_tier: "free"
+  required_capabilities: ["git_access"]
+
+connection:
+  type: "git"
+  auth:
+    method: "passthrough"
+    config:
+      source: "user_context"
+      git_token_header: "X-Git-Token"
+      git_username_header: "X-Git-Username"
+      git_password_header: "X-Git-Password"
+
+tools:
+  load_git_pack:
+    type: "execute"
+    description: "🎯 START HERE: Load a pack from Git repository using your credentials"
+    method: "POST"
+    endpoint: "/internal/git-pack-loader/load"
+    parameters:
+      - name: "repo_url"
+        type: "string"
+        required: true
+        description: "Git repository URL (https://github.com/user/repo.git or git@github.com:user/repo.git)"
+      - name: "pack_path"
+        type: "string"
+        required: false
+        description: "Subdirectory path in repo containing pack.yaml (default: root)"
+      - name: "env_vars"
+        type: "string"
+        required: false
+        description: "JSON object with environment variables for pack tools (e.g. {\"API_URL\":\"https://api.com\",\"TOKEN\":\"xyz\"})"
+      - name: "branch"
+        type: "string"
+        default: "main"
+        description: "Git branch to clone (default: main)"
+      - name: "pack_name"
+        type: "string"
+        required: false
+        description: "Override pack name (default: use name from pack.yaml)"
+
+  update_git_pack:
+    type: "execute"
+    description: "⚠️ USE AFTER [load_git_pack]: Pull latest changes for an existing Git pack"
+    method: "POST"
+    endpoint: "/internal/git-pack-loader/update"
+    parameters:
+      - name: "pack_name"
+        type: "string"
+        required: true
+        description: "Name of the Git pack to update"
+      - name: "branch"
+        type: "string"
+        required: false
+        description: "Git branch to pull (default: current branch)"
+
+  update_git_pack_env:
+    type: "execute"
+    description: "Update environment variables for existing Git pack"
+    method: "POST"
+    endpoint: "/internal/git-pack-loader/update-env"
+    parameters:
+      - name: "pack_name"
+        type: "string"
+        required: true
+        description: "Name of the Git pack to update"
+      - name: "env_vars"
+        type: "string"
+        required: true
+        description: "JSON object with updated environment variables"
+
+  list_git_packs:
+    type: "list"
+    description: "List all loaded Git packs and their status"
+    method: "GET"
+    endpoint: "/internal/git-pack-loader/list"
+    parameters: []
+    transform:
+      type: "jq"
+      expression: '.packs[] | {name: .name, repo_url: .repo_url, branch: .branch, last_updated: .last_updated, status: .status, tools_count: .tools_count, env_vars_count: .env_vars_count}'
+
+  remove_git_pack:
+    type: "execute"
+    description: "Remove a Git pack from runtime"
+    method: "DELETE"
+    endpoint: "/internal/git-pack-loader/remove"
+    parameters:
+      - name: "pack_name"
+        type: "string"
+        required: true
+        description: "Name of the Git pack to remove"
+
+  get_git_pack_info:
+    type: "details"
+    description: "Get detailed information about a Git pack"
+    method: "GET"
+    endpoint: "/internal/git-pack-loader/info/{pack_name}"
+    parameters:
+      - name: "pack_name"
+        type: "string"
+        required: true
+        description: "Name of the Git pack"
+    transform:
+      type: "jq"
+      expression: '{name: .name, repo_url: .repo_url, branch: .branch, pack_path: .pack_path, last_updated: .last_updated, status: .status, tools: [.tools[].name], prompts: [.prompts[].name], env_vars: (.env_vars | keys), git_info: {commit_hash: .git_info.commit_hash, commit_message: .git_info.commit_message, author: .git_info.author}}'
+
+prompts:
+  git_pack_workflow:
+    description: "Comprehensive workflow for loading and managing Git-based packs"
+    template: |
+      Load and manage MCP packs from Git repositories using your credentials:
+      
+      ## Loading Git Packs
+      1. **Start with pack loading**: Use `load_git_pack` with your repo URL
+      2. **Provide Git credentials**: Include X-Git-Token header with your credentials
+      3. **Configure environment**: Provide env_vars JSON if the pack requires them
+      
+      ## Git Authentication Methods
+      **GitHub/GitLab Token (Recommended):**
+      - Header: `X-Git-Token: ghp_your_token_here`
+      - Works with private repos
+      - Most secure method
+      
+      **Username/Password:**
+      - Headers: `X-Git-Username: your_username`, `X-Git-Password: your_password`
+      - For basic HTTP authentication
+      
+      ## Environment Variables
+      Many Git packs require environment variables for their tools:
+      ```json
+      {
+        "SPLUNK_URL": "https://your-splunk.com",
+        "SPLUNK_TOKEN": "your-splunk-token",
+        "API_TIMEOUT": "30"
+      }
+      ```
+      
+      ## Common Workflows
+      **Loading Private Company Pack:**
+      ```
+      load_git_pack(
+        repo_url="https://github.com/mycompany/custom-splunk-pack.git",
+        env_vars='{"SPLUNK_URL":"https://splunk.company.com","TOKEN":"xyz"}'
+      )
+      ```
+      
+      **Loading from Subdirectory:**
+      ```
+      load_git_pack(
+        repo_url="https://github.com/mycompany/mono-repo.git",
+        pack_path="packs/security-tools"
+      )
+      ```
+      
+      **Managing Loaded Packs:**
+      - Use `list_git_packs` to see all loaded packs
+      - Use `update_git_pack` to pull latest changes
+      - Use `remove_git_pack` to unload packs
+      
+      🔒 **Security Notes:**
+      - Your Git credentials are used only for cloning/updating
+      - Environment variables are isolated per pack
+      - Credentials are never stored on the MCP server
+      
+      🚀 **MANDATORY NEXT STEPS:**
+      1. Start with `load_git_pack` and your repository URL
+      2. Provide Git authentication headers (X-Git-Token recommended)
+      3. If pack fails to load, check for missing environment variables
+      4. Use `list_git_packs` to verify successful loading
+    suggested_tools: ["load_git_pack", "list_git_packs", "get_git_pack_info"]
+    arguments:
+      - name: "repo_url"
+        type: "string"
+        description: "Git repository URL to load pack from"
+        required: false
+      - name: "operation"
+        type: "string"
+        description: "Operation to perform (load, update, remove, list)"
+        required: false
+
+resources:
+  git_pack_guide:
+    type: "documentation"
+    url: "https://catalyst-mcp.dev/git-packs/getting-started"
+    description: "Complete guide to creating and using Git-based MCP packs"
+
+  pack_yaml_schema:
+    type: "documentation"
+    url: "https://catalyst-mcp.dev/pack-schema"
+    description: "pack.yaml schema reference for creating MCP packs"
+
+  git_auth_guide:
+    type: "guide"
+    url: "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token"
+    description: "How to create Git personal access tokens for authentication"
+
+  environment_variables_guide:
+    type: "guide"
+    url: "https://catalyst-mcp.dev/git-packs/environment-variables"
+    description: "Guide to handling environment variables in Git packs"
+
+error_mapping:
+  "401": "Git authentication failed - check your Git token or credentials"
+  "403": "Access forbidden - insufficient Git permissions for repository"
+  "404": "Repository not found - check repository URL and access permissions"
+  "422": "Invalid pack configuration - pack.yaml not found or invalid"
+  "409": "Pack already loaded - use update_git_pack to refresh"
+  "500": "Git operation failed - check repository URL and network connectivity"

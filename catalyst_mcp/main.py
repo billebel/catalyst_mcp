@@ -9,6 +9,7 @@ import json
 import time
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
+from contextvars import ContextVar
 from dotenv import load_dotenv
 
 from fastmcp import FastMCP
@@ -32,6 +33,57 @@ load_dotenv()
 
 # Initialize FastMCP server
 mcp = FastMCP("Catalyst MCP Server - Universal")
+
+# User context for passthrough authentication
+user_context: ContextVar[Dict[str, Any]] = ContextVar('user_context', default={})
+
+
+async def auth_middleware(request: Request, call_next):
+    """Extract user authentication context from request headers."""
+    try:
+        context = {}
+        
+        # Extract Authorization header
+        auth_header = request.headers.get('authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:]  # Remove 'Bearer ' prefix
+            context.update({
+                'token': token,
+                'headers': {'Authorization': auth_header}
+            })
+        
+        # Extract API key header
+        api_key = request.headers.get('x-api-key', '')
+        if api_key:
+            context['api_key'] = api_key
+        
+        # Extract Git authentication headers
+        git_token = request.headers.get('x-git-token', '')
+        if git_token:
+            context['git_token'] = git_token
+            
+        git_username = request.headers.get('x-git-username', '')
+        if git_username:
+            context['git_username'] = git_username
+            
+        git_password = request.headers.get('x-git-password', '')
+        if git_password:
+            context['git_password'] = git_password
+        
+        # Set the complete context
+        user_context.set(context)
+        
+        # Call next middleware/handler
+        response = await call_next(request)
+        return response
+        
+    except Exception as e:
+        logger.error(f"Auth middleware error: {e}")
+        # Clear context on error
+        user_context.set({})
+        response = await call_next(request)
+        return response
+
 
 # Health check endpoint for Docker container monitoring
 @mcp.custom_route("/health", methods=["GET"])
@@ -190,6 +242,194 @@ async def get_pack_status() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to get pack status: {e}")
         return {"error": str(e)}
+
+
+# Git pack loader internal API endpoints
+@mcp.custom_route("/internal/git-pack-loader/load", methods=["POST"])
+async def load_git_pack_endpoint(request: Request) -> JSONResponse:
+    """Load a pack from Git repository using user credentials."""
+    if not pack_registry:
+        return JSONResponse({"error": "Pack system not initialized"}, status_code=500)
+    
+    try:
+        # Parse request body
+        body = await request.json()
+        repo_url = body.get("repo_url")
+        pack_path = body.get("pack_path")
+        env_vars = body.get("env_vars")
+        branch = body.get("branch", "main")
+        pack_name = body.get("pack_name")
+        
+        if not repo_url:
+            return JSONResponse({"error": "repo_url is required"}, status_code=400)
+        
+        # Get user context from middleware
+        context = user_context.get()
+        
+        # Load Git pack
+        result = pack_registry.load_git_pack(
+            repo_url=repo_url,
+            user_context=context,
+            pack_path=pack_path,
+            env_vars=env_vars,
+            branch=branch,
+            pack_name=pack_name
+        )
+        
+        if result.get("error"):
+            return JSONResponse(result, status_code=400)
+        
+        # If successful, register pack tools
+        if tool_factory and result.get("success"):
+            loaded_pack_name = result.get("pack_name")
+            pack = pack_registry.get_pack(loaded_pack_name, lazy_load=False)
+            if pack:
+                registered_tools = tool_factory.register_pack_tools(loaded_pack_name, pack)
+                result["tools_registered"] = len(registered_tools)
+                logger.info(f"Git pack '{loaded_pack_name}': {len(registered_tools)} tools registered")
+        
+        return JSONResponse(result)
+        
+    except Exception as e:
+        logger.error(f"Git pack load endpoint error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/internal/git-pack-loader/update", methods=["POST"])
+async def update_git_pack_endpoint(request: Request) -> JSONResponse:
+    """Update an existing Git pack."""
+    if not pack_registry:
+        return JSONResponse({"error": "Pack system not initialized"}, status_code=500)
+    
+    try:
+        body = await request.json()
+        pack_name = body.get("pack_name")
+        branch = body.get("branch")
+        
+        if not pack_name:
+            return JSONResponse({"error": "pack_name is required"}, status_code=400)
+        
+        # Get user context from middleware
+        context = user_context.get()
+        
+        # Update Git pack
+        result = pack_registry.update_git_pack(pack_name, context, branch)
+        
+        if result.get("error"):
+            return JSONResponse(result, status_code=400)
+        
+        # Re-register tools if successful
+        if tool_factory and result.get("success"):
+            # Unregister old tools
+            unregistered = tool_factory.unregister_pack_tools(pack_name)
+            logger.info(f"Unregistered {len(unregistered)} tools from {pack_name}")
+            
+            # Register updated tools
+            pack = pack_registry.get_pack(pack_name, lazy_load=False)
+            if pack:
+                registered = tool_factory.register_pack_tools(pack_name, pack)
+                result["tools_registered"] = len(registered)
+                logger.info(f"Re-registered {len(registered)} tools for {pack_name}")
+        
+        return JSONResponse(result)
+        
+    except Exception as e:
+        logger.error(f"Git pack update endpoint error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/internal/git-pack-loader/list", methods=["GET"])
+async def list_git_packs_endpoint(request: Request) -> JSONResponse:
+    """List all loaded Git packs."""
+    if not pack_registry:
+        return JSONResponse({"error": "Pack system not initialized"}, status_code=500)
+    
+    try:
+        result = pack_registry.list_git_packs()
+        
+        # Enhance with tool counts
+        if "packs" in result:
+            for pack_info in result["packs"]:
+                pack_name = pack_info.get("name")
+                if pack_name and tool_factory:
+                    tool_counts = tool_factory.get_tool_count_by_pack()
+                    pack_info["tools_registered"] = tool_counts.get(pack_name, 0)
+                    
+                # Add environment variable count
+                env_vars = pack_info.get("env_vars", {})
+                pack_info["env_vars_count"] = len(env_vars) if env_vars else 0
+        
+        return JSONResponse(result)
+        
+    except Exception as e:
+        logger.error(f"Git pack list endpoint error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/internal/git-pack-loader/remove", methods=["DELETE"])
+async def remove_git_pack_endpoint(request: Request) -> JSONResponse:
+    """Remove a Git pack from runtime."""
+    if not pack_registry:
+        return JSONResponse({"error": "Pack system not initialized"}, status_code=500)
+    
+    try:
+        body = await request.json()
+        pack_name = body.get("pack_name")
+        
+        if not pack_name:
+            return JSONResponse({"error": "pack_name is required"}, status_code=400)
+        
+        # Unregister tools first
+        if tool_factory:
+            unregistered = tool_factory.unregister_pack_tools(pack_name)
+            logger.info(f"Unregistered {len(unregistered)} tools from {pack_name}")
+        
+        # Remove Git pack
+        result = pack_registry.remove_git_pack(pack_name)
+        
+        if result.get("success") and tool_factory:
+            result["tools_unregistered"] = len(unregistered) if 'unregistered' in locals() else 0
+        
+        return JSONResponse(result)
+        
+    except Exception as e:
+        logger.error(f"Git pack remove endpoint error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/internal/git-pack-loader/info/{pack_name}", methods=["GET"])
+async def get_git_pack_info_endpoint(request: Request) -> JSONResponse:
+    """Get detailed information about a Git pack."""
+    if not pack_registry:
+        return JSONResponse({"error": "Pack system not initialized"}, status_code=500)
+    
+    try:
+        pack_name = request.path_params.get("pack_name")
+        
+        if not pack_name:
+            return JSONResponse({"error": "pack_name is required"}, status_code=400)
+        
+        result = pack_registry.get_git_pack_info(pack_name)
+        
+        if result.get("error"):
+            return JSONResponse(result, status_code=404)
+        
+        # Enhance with pack details
+        pack = pack_registry.get_pack(pack_name, lazy_load=False)
+        if pack:
+            result["tools"] = [{"name": tool_name} for tool_name in pack.tools.keys()]
+            result["prompts"] = [{"name": prompt_name} for prompt_name in pack.prompts.keys()]
+        
+        # Add tool registration count
+        if tool_factory:
+            tool_counts = tool_factory.get_tool_count_by_pack()
+            result["tools_registered"] = tool_counts.get(pack_name, 0)
+        
+        return JSONResponse(result)
+        
+    except Exception as e:
+        logger.error(f"Git pack info endpoint error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 # Legacy Splunk tools for compatibility during migration
