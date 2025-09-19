@@ -1,0 +1,193 @@
+# Splunk OAuth Knowledge Pack
+# This pack enables OAuth authentication for Splunk instances
+
+metadata:
+  name: splunk-oauth
+  version: 1.0.0
+  description: Splunk integration with OAuth authentication
+  vendor: Catalyst
+  license: MIT
+  compatibility: ">=1.0.0"
+  domain: security
+  tags:
+    - splunk
+    - oauth
+    - authentication
+    - search
+  pricing_tier: free
+
+connection:
+  type: rest
+  base_url: "${SPLUNK_URL}"
+  verify_ssl: false
+  timeout: 30
+  auth:
+    method: oauth2
+    config:
+      client_id: "${SPLUNK_OAUTH_CLIENT_ID}"
+      client_secret: "${SPLUNK_OAUTH_CLIENT_SECRET}"
+      instance_url: "${SPLUNK_URL}"
+      header: "Authorization"
+      format: "Bearer {token}"
+      scopes: ["search", "admin"]
+
+tools:
+  - name: splunk_oauth_search
+    description: Execute a search query in Splunk using OAuth authentication
+    type: search
+    endpoint:
+      method: POST
+      path: "/services/search/jobs"
+      headers:
+        Content-Type: "application/x-www-form-urlencoded"
+    parameters:
+      search:
+        type: string
+        description: The SPL search query to execute
+        required: true
+        example: "search index=main | head 10"
+      earliest_time:
+        type: string
+        description: Earliest time for the search
+        required: false
+        default: "-1h"
+      latest_time:
+        type: string
+        description: Latest time for the search
+        required: false
+        default: "now"
+    request_format:
+      type: form
+      mapping:
+        search: "{search}"
+        earliest_time: "{earliest_time}"
+        latest_time: "{latest_time}"
+        output_mode: "json"
+    transform:
+      engine: jq
+      script: |
+        {
+          sid: .sid,
+          status: "Search job created",
+          message: "Use get_search_results with this SID to retrieve results"
+        }
+
+  - name: get_search_results
+    description: Get results from a Splunk search job
+    type: search
+    endpoint:
+      method: GET
+      path: "/services/search/jobs/{sid}/results"
+      headers:
+        Accept: "application/json"
+    parameters:
+      sid:
+        type: string
+        description: Search job ID
+        required: true
+      count:
+        type: integer
+        description: Maximum number of results to return
+        required: false
+        default: 100
+    request_format:
+      type: query
+      mapping:
+        output_mode: "json"
+        count: "{count}"
+    transform:
+      engine: jq
+      script: |
+        {
+          results: .results,
+          fields: .fields,
+          count: .results | length
+        }
+
+  - name: authenticate_splunk
+    description: Trigger OAuth authentication for a Splunk instance
+    type: execute
+    endpoint:
+      method: POST
+      path: "/oauth/start"
+      base_url: "http://localhost:8443"  # MCP server endpoint
+    parameters:
+      instance_url:
+        type: string
+        description: Splunk instance URL
+        required: true
+        example: "https://mycompany.splunkcloud.com"
+      client_id:
+        type: string
+        description: OAuth client ID for your Splunk app
+        required: true
+    request_format:
+      type: json
+      mapping:
+        instance_url: "{instance_url}"
+        client_id: "{client_id}"
+    transform:
+      engine: jq
+      script: |
+        {
+          auth_url: .auth_url,
+          instructions: "Please visit the auth_url to authenticate with your Splunk instance",
+          state: .state
+        }
+
+  - name: check_auth_status
+    description: Check if authenticated to a Splunk instance
+    type: search
+    endpoint:
+      method: GET
+      path: "/oauth/status"
+      base_url: "http://localhost:8443"  # MCP server endpoint
+    parameters:
+      instance_url:
+        type: string
+        description: Splunk instance URL to check
+        required: true
+    request_format:
+      type: query
+      mapping:
+        instance_url: "{instance_url}"
+    transform:
+      engine: jq
+      script: |
+        {
+          instance: .instance,
+          authenticated: .authenticated,
+          message: (if .authenticated then "Authenticated" else "Not authenticated - use authenticate_splunk tool" end)
+        }
+
+settings:
+  retry:
+    max_retries: 3
+    backoff: exponential
+    backoff_factor: 2
+  rate_limit:
+    requests_per_minute: 60
+  cache:
+    enabled: false
+
+examples:
+  - name: Basic Search
+    tool: splunk_oauth_search
+    parameters:
+      search: "search index=_internal | stats count by component | head 10"
+      earliest_time: "-15m"
+      latest_time: "now"
+    description: Search internal index for component statistics
+
+  - name: Authenticate to Splunk
+    tool: authenticate_splunk
+    parameters:
+      instance_url: "https://mycompany.splunkcloud.com"
+      client_id: "my-oauth-app-client-id"
+    description: Start OAuth flow for Splunk instance
+
+  - name: Check Authentication
+    tool: check_auth_status
+    parameters:
+      instance_url: "https://mycompany.splunkcloud.com"
+    description: Check if authenticated to Splunk instance

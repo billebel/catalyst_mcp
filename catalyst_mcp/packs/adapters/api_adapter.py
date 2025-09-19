@@ -137,10 +137,58 @@ class AuthenticationHandler:
             logger.warning(f"Passthrough auth configured (source: {source}, header: {header_name}, format: {format_template}) but user context not available yet")
             return {}
         
+        elif auth_method == AuthMethod.OAUTH2 or auth_method == "oauth2":
+            # OAuth2 authentication
+            # Check if we have a stored token from the OAuth flow
+            from ...oauth import SimpleOAuth
+            oauth_handler = SimpleOAuth()
+
+            # Get instance URL from connection config
+            instance_url = connection.base_url or auth_config.get('instance_url', '')
+
+            # Check if we have a valid token
+            token = oauth_handler.get_token(instance_url)
+
+            if token:
+                # Use the OAuth token
+                header_name = auth_config.get('header', 'Authorization')
+                format_template = auth_config.get('format', 'Bearer {token}')
+                formatted_value = format_template.format(token=token)
+                logger.debug(f"Using OAuth2 token for {instance_url}")
+                return {'headers': {header_name: formatted_value}}
+            else:
+                # No valid token - user needs to authenticate
+                logger.warning(f"OAuth2 authentication required for {instance_url} - no valid token found")
+                return {}
+
+        elif auth_method == AuthMethod.SAML or auth_method == "saml":
+            # SAML authentication
+            # Check if we have a stored token from the SAML flow
+            from ...saml_auth import SplunkSAMLAuth
+            saml_handler = SplunkSAMLAuth()
+
+            # Get instance URL from connection config
+            instance_url = connection.base_url or auth_config.get('instance_url', '')
+
+            # Check if we have a valid token
+            token = saml_handler.get_token(instance_url)
+
+            if token:
+                # Use the SAML token (Splunk format)
+                header_name = auth_config.get('header', 'Authorization')
+                format_template = auth_config.get('format', 'Splunk {token}')
+                formatted_value = format_template.format(token=token)
+                logger.debug(f"Using SAML token for {instance_url}")
+                return {'headers': {header_name: formatted_value}}
+            else:
+                # No valid token - user needs to authenticate
+                logger.warning(f"SAML authentication required for {instance_url} - no valid token found")
+                return {}
+
         elif auth_method == AuthMethod.CUSTOM or auth_method == "custom":
             # Custom authentication allows complete flexibility
             headers = {}
-            
+
             # Support multiple custom headers
             if 'headers' in auth_config:
                 # Multiple headers specified as dict
